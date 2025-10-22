@@ -8,10 +8,11 @@ let scene, camera, renderer, pControl;
 let xdir = 0, zdir = 0;
 let posI, posF, vel, delta;
 let jump = false, yi, vi, t, ti;
+
 let collidableObjs = [];
 let deadlyObjs = [];
 let blockingObjs = [];
-
+let isPaused = false;
 let zombieMixers = [];
 
 const sound = document.getElementById("running");
@@ -44,7 +45,8 @@ scene.fog = new THREE.Fog(0xffffff, 0, 500);
 scene.add(new THREE.HemisphereLight(0xffffff));
 
 camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 1, 1000);
-camera.position.set(905, 8.9, 97);
+camera.position.set(905, 8.9, 90);
+camera.rotation.y = Math.PI / 2;
 
 renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -84,31 +86,86 @@ document.getElementById('play_game').onclick = () => {
   pControl.lock();
 };
 
-// ⌨️ Movement
-document.addEventListener('keydown', (e) => {
-  switch (e.keyCode) {
-    case 37: sound.play(); xdir = -1; break;
-    case 38: sound.play(); zdir = 1; break;
-    case 39: sound.play(); xdir = 1; break;
-    case 40: sound.play(); zdir = -1; break;
-    case 32: ti = Date.now(); jump = true; break;
-  }
+document.getElementById("resume_game").addEventListener("click", () => {
+  isPaused = false;
+  document.getElementById("pause_menu").style.display = "none";
+  pControl.lock();
 });
-document.addEventListener('keyup', (e) => {
-  switch (e.keyCode) {
-    case 37:
-    case 38:
-    case 39:
-    case 40:
-      sound.pause(); xdir = zdir = 0; break;
-    case 82:
-      window.location.reload(); break;
+
+document.getElementById("quit_game").addEventListener("click", () => {
+  window.location.href = "index.html";
+});
+
+const keys = {}; // keep track of which keys are held down
+
+document.addEventListener('keydown', (e) => {
+  keys[e.key.toLowerCase()] = true;
+
+  // Start sound only if a movement key is pressed
+  if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd'].includes(e.key.toLowerCase())) {
+    if (sound.paused) sound.play();
+  }
+
+  // Update movement directions
+  xdir = (keys['arrowright'] || keys['d'] ? 1 : 0) - (keys['arrowleft'] || keys['a'] ? 1 : 0);
+  zdir = (keys['arrowup'] || keys['w'] ? 1 : 0) - (keys['arrowdown'] || keys['s'] ? 1 : 0);
+
+  // Jump
+  if (e.key === ' ' || e.key === 'Spacebar') {
+    ti = Date.now();
+    jump = true;
+  }
+
+  // Reload (R key)
+  if (e.key.toLowerCase() === 'r') {
+    window.location.reload();
   }
 });
 
+document.addEventListener('keyup', (e) => {
+  keys[e.key.toLowerCase()] = false;
+
+  // Update movement after releasing key
+  xdir = (keys['arrowright'] || keys['d'] ? 1 : 0) - (keys['arrowleft'] || keys['a'] ? 1 : 0);
+  zdir = (keys['arrowup'] || keys['w'] ? 1 : 0) - (keys['arrowdown'] || keys['s'] ? 1 : 0);
+
+  // Stop sound only if no movement keys are still pressed
+  if (
+    !keys['arrowup'] && !keys['arrowdown'] &&
+    !keys['arrowleft'] && !keys['arrowright'] &&
+    !keys['w'] && !keys['a'] && !keys['s'] && !keys['d']
+  ) {
+    sound.pause();
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key.toLowerCase() === 'p' || e.key === 'Escape') {
+    togglePause();
+  }
+});
+
+function togglePause() {
+  const pauseMenu = document.getElementById("pause_menu");
+
+  if (!isPaused) {
+    // Pause the game
+    isPaused = true;
+    pControl.unlock(); // release pointer lock
+    pauseMenu.style.display = "block";
+    sound.pause();
+  } else {
+    // Resume the game
+    isPaused = false;
+    pauseMenu.style.display = "none";
+    pControl.lock();
+    if (!sound.paused && (xdir !== 0 || zdir !== 0)) sound.play();
+  }
+}
+
 // 📦 Collision mesh
 const meshInMaterial = new THREE.MeshBasicMaterial({ visible: false });
-const meshIn = new THREE.Mesh(new THREE.BoxGeometry(5, 25, 10), meshInMaterial);
+const meshIn = new THREE.Mesh(new THREE.BoxGeometry(2, 25, 10), meshInMaterial);
 scene.add(meshIn);
 
 // 🔥 Build stage (obstacles)
@@ -121,10 +178,10 @@ function buildStage(sceneFaceSet) {
       if (row[j] === 1) {
         const fireTexture = new THREE.TextureLoader().load('./models/fire.jpg');
         const mesh = new THREE.Mesh(
-          new THREE.BoxGeometry(5, 10, 25),
+          new THREE.BoxGeometry(3, 10, 25),
           new THREE.MeshBasicMaterial({ map: fireTexture, side: THREE.DoubleSide })
         );
-        mesh.position.set(Xpos, 0, Zpos);
+        mesh.position.set(Xpos, -2, Zpos);
         scene.add(mesh);
         deadlyObjs.push(mesh); // only deadly objects here
       }
@@ -137,50 +194,80 @@ function buildStage(sceneFaceSet) {
 // 🌲 Tree generation (now blocking)
 function genTree(dir = 1) {
   const tree = new Tree("light");
-  const startX = camera.position.x + 50; // start a bit ahead of the player
-  const endX = -500;                     // extend to far end of runway
+  const startX = camera.position.x + 70;
 
   for (let i = 0; i < 400; i++) {
-    const clone_tree = tree._group.clone();
-    clone_tree.scale.set(40, 40, 40);
-    clone_tree.position.set(
-      startX - i * 10, // gradual placement along the runway
+    // --- First row ---
+    const frontTree = tree._group.clone();
+    frontTree.scale.set(40, 40, 40);
+    frontTree.position.set(
+      startX - i * 10,
       90,
-      dir * (i % 2 === 0 ? 150 : 15)
+      dir * (i % 2 === 0 ? 170 : 10)
     );
-    scene.add(clone_tree);
-    blockingObjs.push(clone_tree);
+    scene.add(frontTree);
+    blockingObjs.push(frontTree);
+
+    // --- Second row (behind the first) ---
+    const backTree = tree._group.clone();
+    backTree.scale.set(40, 40, 40);
+    backTree.position.set(
+      startX - i * 6,
+      90,
+      dir * ((i % 2 === 0 ? 170 : 10) + 10) // push it further away
+    );
+    scene.add(backTree);
+    blockingObjs.push(backTree);
+
+    // --- Second row (behind the first) ---
+    const backTree1 = tree._group.clone();
+    backTree1.scale.set(40, 40, 40);
+    backTree1.position.set(
+      startX - i * 8,
+      90,
+      dir * ((i % 2 === 0 ? 170 : 10) -20) // push it further away
+    );
+    scene.add(backTree1);
+    blockingObjs.push(backTree1);
   }
 }
 
+
 // 💀 Optimized zombie spawning
 function spawnZombies() {
+  const zombiePositions = [
+    [870, 110], [800, 60], [400, 83],
+    [300, 97], [200, 70], [650, 60],
+    [100, 90], [-50, 90], [-120, 90], [-200, 60]
+  ];
+
   const loader = new FBXLoader();
+  const animLoader = new FBXLoader();
+
   loader.load('./models/zombie.fbx', (model) => {
     model.scale.set(0.07, 0.07, 0.07);
     model.traverse(d => d.castShadow = true);
 
-    const animLoader = new FBXLoader();
+    // Load animation once
     animLoader.load('./models/Walking.fbx', (anim) => {
       const clip = anim.animations[0];
-      const positions = [
-        [870, 110], [800, 60], [400, 83],
-        [300, 97], [200, 70], [650, 60],
-        [100, 90], [-50, 90], [-120, 90], [-200, 60]
-      ];
 
-      positions.forEach(([x, z]) => {
-        const zombie = model.clone(true); // deep clone with bones
-        zombie.position.set(x, 0, z);
+      // For each zombie, reload the base FBX (to preserve skeleton binding)
+      zombiePositions.forEach(([x, z]) => {
+        loader.load('./models/zombie.fbx', (zombie) => {
+          zombie.scale.set(0.07, 0.07, 0.07);
+          zombie.position.set(x, -2, z);
+          zombie.rotation.y = Math.random() * Math.PI * 2;
+          zombie.traverse(d => d.castShadow = true);
 
-        const mixer = new THREE.AnimationMixer(zombie);
-        const action = mixer.clipAction(clip);
-        action.play();
+          const mixer = new THREE.AnimationMixer(zombie);
+          const action = mixer.clipAction(clip);
+          action.play();
 
-        zombieMixers.push(mixer);
-        zombie.rotation.y = Math.random() * Math.PI * 2;
-        scene.add(zombie);
-        deadlyObjs.push(zombie);
+          zombieMixers.push(mixer);
+          deadlyObjs.push(zombie);
+          scene.add(zombie);
+        });
       });
     });
   });
@@ -188,7 +275,7 @@ function spawnZombies() {
 
 // 💎 Collectables
 function generateCollectables() {
-  const sphereGeo = new THREE.SphereGeometry(5, 16, 16);
+  const sphereGeo = new THREE.SphereGeometry(1, 16, 16);
   const sphereMat = new THREE.MeshStandardMaterial({
     color: 0xffd700,
     emissive: 0xffff00,
@@ -196,7 +283,7 @@ function generateCollectables() {
   });
   for (let i = 0; i < 20; i++) {
     let sphere = new THREE.Mesh(sphereGeo, sphereMat);
-    sphere.position.set(850 - i * 50, 10, 80 + (Math.random() - 0.5) * 100);
+    sphere.position.set(850 - i * 50, 6, 80 + (Math.random() - 0.5) * 100);
     scene.add(sphere);
     collectables.push(sphere);
   }
@@ -246,6 +333,9 @@ function animate() {
   const c = clock.getDelta();
   zombieMixers.forEach(m => m.update(c));
   requestAnimationFrame(animate);
+  console.log(camera.position);
+
+  if (isPaused) return;
 
   if (pControl.isLocked === true) {
     posF = Date.now();
@@ -283,7 +373,7 @@ function animate() {
 
   // 🏁 Win condition
   if (camera.position.x <= -473) {
-    alert(`You reached the end! Final score: ${score}`);
+    // alert(`You reached the end! Final score: ${score}`);
     location.href = "Done.html";
   }
 

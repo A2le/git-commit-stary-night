@@ -9,6 +9,33 @@ import {wall} from "./obstacles/wall.js";
 let GameState;
 let scene , camera, renderer,controls,car3d , obstacle = [];
 let OldX = 0;
+let collectables = [];
+let miniMapCamera;
+let miniMapSize = { width: 200, height: 200 };
+let carArrow;
+
+// 🧮 Score UI
+let score = 0;
+let scoreDisplay = document.createElement('div');
+scoreDisplay.style.position = 'absolute';
+scoreDisplay.style.top = '20px';
+scoreDisplay.style.left = '20px';
+scoreDisplay.style.color = 'white';
+scoreDisplay.style.fontSize = '24px';
+scoreDisplay.style.fontFamily = 'monospace';
+scoreDisplay.innerHTML = `Score: ${score}`;
+document.body.appendChild(scoreDisplay);
+
+// //min map oveerlay
+// const miniMapBorder = document.createElement('div');
+// miniMapBorder.style.position = 'absolute';
+// miniMapBorder.style.bottom = '20px';
+// miniMapBorder.style.right = '20px';
+// miniMapBorder.style.width = miniMapSize.width + 'px';
+// miniMapBorder.style.height = miniMapSize.height + 'px';
+// miniMapBorder.style.border = '2px solid white';
+// miniMapBorder.style.pointerEvents = 'none';
+// document.body.appendChild(miniMapBorder);
 
 const StartButton = document.getElementById("play_game"); // Get the Start Button
 StartButton.addEventListener('click',() => {
@@ -27,11 +54,30 @@ let PauseMenu = document.getElementById("pause_menu"); // get the PauseMenu Butt
     });
 
 
+const MiniMapSetup = () => {
+    // Orthographic top-down camera
+    const aspect = window.innerWidth / window.innerHeight;
+    const d = 10; // visible area size (adjust as needed)
+
+    miniMapCamera = new THREE.OrthographicCamera(
+        -d * aspect, d * aspect, d, -d, 1, 1000
+    );
+
+    // Position high above, looking down the Y-axis
+    miniMapCamera.position.set(0, 100, 0);
+
+    // Rotate so +X (your forward direction) points up on the minimap
+    miniMapCamera.rotation.x = -Math.PI / 2; // look straight down
+    miniMapCamera.rotation.z = -Math.PI / 2; // rotate so +X is “up”
+};
+
+
 const CreateEnvironment = () => {
 
     scene = new THREE.Scene();
 
     CameraSetUp();      // Creates the Camera
+    MiniMapSetup();     //minmap camers 
     LightSetup();       // Adds the Lights to the Scene
     RendererSetUp();    // Sets up the Renderer
     ControlsSetUp();    // Initialises the Controls for thr Player
@@ -52,7 +98,53 @@ const animate = (time) =>{
         car3d.animateCar(time , obstacle);
         OptimiseObstacles();
     }
+
+    // 🗺️ Update minimap camera to follow the car
+    if (car3d && car3d._car) {
+        const carPos = car3d._car.position;
+
+        // Keep minimap above the car and follow it
+        miniMapCamera.position.x = carPos.x;
+        // miniMapCamera.position.z = carPos.z;
+    }
+    if (car3d && car3d._car && carArrow) {
+        const car = car3d._car;
+        carArrow.position.copy(car.position).add(new THREE.Vector3(0, 5, 0)); // slightly above
+    }
+
     renderer.render(scene,camera);
+
+    // Render minimap
+    const { width, height } = renderer.getSize(new THREE.Vector2());
+    renderer.clearDepth(); // clear depth buffer for second pass
+
+    // Bottom-right corner of screen
+    renderer.setViewport(width - miniMapSize.width - 20, 20, miniMapSize.width, miniMapSize.height);
+    renderer.setScissor(width - miniMapSize.width - 20, 20, miniMapSize.width, miniMapSize.height);
+    renderer.setScissorTest(true);
+
+    renderer.render(scene, miniMapCamera);
+
+    // Reset
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, width, height);
+
+    
+
+    // ✅ Collectable check
+    for (let i = collectables.length - 1; i >= 0; i--) {
+        const sphere = collectables[i];
+        if (car3d && car3d._car) {
+        const playerBox = new THREE.Box3().setFromObject(car3d._car);
+        const sphereBox = new THREE.Box3().setFromObject(sphere);
+        if (playerBox.intersectsBox(sphereBox)) {
+            scene.remove(sphere);
+            collectables.splice(i, 1);
+            score++;
+            scoreDisplay.innerHTML = `Score: ${score}`;
+        }
+        }
+    }
 }
 
 const LoadCar = () => {
@@ -60,6 +152,11 @@ const LoadCar = () => {
     car3d = new OldCar(carEngine, camera);
     car3d.getCar().then(carObj => {
         scene.add(carObj);
+        const carMapIconMaterial = new THREE.SpriteMaterial({ color: 0xff0000 });
+        carArrow = new THREE.Sprite(carMapIconMaterial);
+        carArrow.scale.set(2, 2, 1);
+        scene.add(carArrow);
+
     });
 }
 
@@ -180,6 +277,31 @@ const ControlsSetUp = () =>{
     controls.enablePan = false;
 }
 
+// 💎 Collectables
+function generateCollectables() {
+  const sphereGeo = new THREE.SphereGeometry(0.4, 16, 16);
+  const sphereMat = new THREE.MeshStandardMaterial({
+    color: 0xffd700,
+    emissive: 0xffff00,
+    emissiveIntensity: 1,
+  });
+
+  for (let i = 0; i < 20; i++) {
+    const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+
+    // X → forward direction (runway)
+    // Z → side-to-side (lane)
+    sphere.position.set(
+      camera.position.x + 100 + i * 50,         // ahead along +X
+      1,                                       // height above ground
+      (Math.random() - 0.5) * 14.6              // stays within -7.3 to +7.3
+    );
+
+    scene.add(sphere);
+    collectables.push(sphere);
+  }
+}
+
 const AddMiscObjects = () => {
     let floor = new Ground();
     scene.add(floor.BuildFloor);
@@ -189,6 +311,7 @@ const AddMiscObjects = () => {
     genTreeDark(1)
     genTreeDark(-1);
     CreateSky();
+    generateCollectables();
 
     LoadCar(); //loads the 3d Model
     setupKeyControls(); // movement
